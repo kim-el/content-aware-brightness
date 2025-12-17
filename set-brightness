@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""
+Set Mac display brightness using private DisplayServices framework.
+Works on Apple Silicon.
+
+Usage:
+    set-brightness              # Show current brightness
+    set-brightness 0.5          # Set to 50% (instant)
+    set-brightness 0.5 smooth   # Set to 50% (gradual transition)
+    set-brightness +0.1         # Increase by 10%
+    set-brightness -0.1 smooth  # Decrease by 10% (gradual)
+"""
+import sys
+import time
+import ctypes
+
+# Load DisplayServices framework
+ds = ctypes.CDLL('/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices')
+
+ds.DisplayServicesGetBrightness.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_float)]
+ds.DisplayServicesGetBrightness.restype = ctypes.c_int32
+
+ds.DisplayServicesSetBrightness.argtypes = [ctypes.c_uint32, ctypes.c_float]
+ds.DisplayServicesSetBrightness.restype = ctypes.c_int32
+
+def get_brightness():
+    brightness = ctypes.c_float()
+    result = ds.DisplayServicesGetBrightness(1, ctypes.byref(brightness))
+    if result == 0:
+        return brightness.value
+    return None
+
+def set_brightness(value):
+    value = max(0.0, min(1.0, value))
+    result = ds.DisplayServicesSetBrightness(1, ctypes.c_float(value))
+    return result == 0
+
+def set_brightness_smooth(target, duration=0.3, steps=15):
+    """Gradually transition to target brightness."""
+    current = get_brightness()
+    if current is None:
+        return False
+
+    target = max(0.0, min(1.0, target))
+    diff = target - current
+
+    if abs(diff) < 0.01:
+        return True
+
+    step_delay = duration / steps
+    step_size = diff / steps
+
+    for i in range(steps):
+        new_val = current + (step_size * (i + 1))
+        set_brightness(new_val)
+        time.sleep(step_delay)
+
+    # Ensure we hit exact target
+    set_brightness(target)
+    return True
+
+if __name__ == "__main__":
+    current = get_brightness()
+    smooth = "smooth" in sys.argv
+
+    if len(sys.argv) < 2 or (len(sys.argv) == 2 and smooth):
+        if current is not None:
+            print(f"{current:.2f}")
+        else:
+            print("Error: Could not get brightness")
+            sys.exit(1)
+    else:
+        arg = sys.argv[1]
+
+        if arg.startswith('+') or arg.startswith('-'):
+            delta = float(arg)
+            new_value = current + delta if current else 0.5
+        else:
+            new_value = float(arg)
+
+        new_value = max(0.0, min(1.0, new_value))
+
+        if smooth:
+            if set_brightness_smooth(new_value):
+                print(f"{new_value:.2f}")
+            else:
+                print("Error: Could not set brightness")
+                sys.exit(1)
+        else:
+            if set_brightness(new_value):
+                print(f"{new_value:.2f}")
+            else:
+                print("Error: Could not set brightness")
+                sys.exit(1)

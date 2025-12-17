@@ -1,0 +1,108 @@
+#!/bin/bash
+#
+# Content-Aware Brightness
+# Dims screen when content is bright, brightens when content is dark.
+#
+
+# Content-Aware Brightness Daemon
+# Run manually or via LaunchAgent
+
+LAST_BRIGHTNESS=128
+CHECK_INTERVAL=0.5
+
+# Target brightness levels
+BRIGHT_CONTENT_TARGET=0.5   # When viewing white/bright content
+DARK_CONTENT_TARGET=0.87    # When viewing dark content
+
+set_for_bright() {
+    ~/bin/set-brightness $BRIGHT_CONTENT_TARGET smooth
+}
+
+set_for_dark() {
+    ~/bin/set-brightness $DARK_CONTENT_TARGET smooth
+}
+
+get_screen_brightness() {
+    # Capture small center region (faster than full screen)
+    TMP_FILE="/tmp/screen_sample.png"
+
+    # Capture 200x200 region from center of screen
+    screencapture -x -t png -R 540,340,200,200 "$TMP_FILE" 2>/dev/null
+
+    # Resize to 1x1 pixel to get average color
+    sips -z 1 1 "$TMP_FILE" --out "$TMP_FILE" &>/dev/null
+
+    # Get RGB values using sips
+    RGB=$(sips -g all "$TMP_FILE" 2>/dev/null | grep -E "pixel" || echo "")
+
+    # Alternative: use ImageMagick if available, or estimate from file size
+    # For now, use file entropy as rough brightness estimate
+
+    # Get raw pixel data using xxd and calculate average
+    if command -v convert &>/dev/null; then
+        # ImageMagick available
+        BRIGHTNESS=$(convert "$TMP_FILE" -colorspace gray -format "%[fx:mean*255]" info: 2>/dev/null)
+    else
+        # Fallback: analyze PNG with Python's built-in modules
+        BRIGHTNESS=$(python3 << 'PYTHON'
+import struct
+import zlib
+import os
+
+def get_png_brightness(filepath):
+    try:
+        with open(filepath, 'rb') as f:
+            # Skip PNG header
+            f.read(8)
+            # Read chunks until we find IDAT
+            while True:
+                length = struct.unpack('>I', f.read(4))[0]
+                chunk_type = f.read(4)
+                data = f.read(length)
+                f.read(4)  # CRC
+
+                if chunk_type == b'IDAT':
+                    # Decompress and get pixel values
+                    raw = zlib.decompress(data)
+                    # Average the bytes (rough brightness)
+                    if len(raw) > 0:
+                        avg = sum(raw) / len(raw)
+                        print(int(avg))
+                        return
+                if chunk_type == b'IEND':
+                    break
+        print(128)  # Default
+    except:
+        print(128)
+
+get_png_brightness('/tmp/screen_sample.png')
+PYTHON
+)
+    fi
+
+    rm -f "$TMP_FILE"
+    echo "${BRIGHTNESS:-128}"
+}
+
+while true; do
+    CONTENT_BRIGHTNESS=$(get_screen_brightness)
+
+    # Convert to integer
+    CONTENT_BRIGHTNESS=${CONTENT_BRIGHTNESS%.*}
+    CONTENT_BRIGHTNESS=${CONTENT_BRIGHTNESS:-128}
+
+    # Calculate difference from last
+    DIFF=$((CONTENT_BRIGHTNESS - LAST_BRIGHTNESS))
+    DIFF=${DIFF#-}  # Absolute value
+
+    if [ "$DIFF" -gt 20 ]; then
+        if [ "$CONTENT_BRIGHTNESS" -gt 170 ]; then
+            set_for_bright
+        elif [ "$CONTENT_BRIGHTNESS" -lt 90 ]; then
+            set_for_dark
+        fi
+        LAST_BRIGHTNESS=$CONTENT_BRIGHTNESS
+    fi
+
+    sleep $CHECK_INTERVAL
+done
