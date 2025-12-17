@@ -33,6 +33,19 @@ chmod +x ~/bin/auto-brightness ~/bin/set-brightness
 
 # Install LaunchAgent (auto-start on login)
 cp com.kim.auto-brightness.plist ~/Library/LaunchAgents/
+```
+
+### Grant Screen Recording Permission
+
+**Important:** You must add `/bin/bash` to Screen Recording permissions:
+
+1. Open **System Settings → Privacy & Security → Screen Recording**
+2. Click **+** button
+3. Press **Cmd+Shift+G** and type: `/bin/bash`
+4. Click **Open**, then toggle it **ON**
+
+Then load the LaunchAgent:
+```bash
 launchctl load ~/Library/LaunchAgents/com.kim.auto-brightness.plist
 ```
 

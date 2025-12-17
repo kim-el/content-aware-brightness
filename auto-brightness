@@ -15,19 +15,19 @@ BRIGHT_CONTENT_TARGET=0.5   # When viewing white/bright content
 DARK_CONTENT_TARGET=0.87    # When viewing dark content
 
 set_for_bright() {
-    ~/bin/set-brightness $BRIGHT_CONTENT_TARGET smooth
+    /Users/kimen/bin/set-brightness $BRIGHT_CONTENT_TARGET smooth
 }
 
 set_for_dark() {
-    ~/bin/set-brightness $DARK_CONTENT_TARGET smooth
+    /Users/kimen/bin/set-brightness $DARK_CONTENT_TARGET smooth
 }
 
 get_screen_brightness() {
     # Capture small center region (faster than full screen)
     TMP_FILE="/tmp/screen_sample.png"
 
-    # Capture 200x200 region from center of screen
-    screencapture -x -t png -R 540,340,200,200 "$TMP_FILE" 2>/dev/null
+    # Capture full screen
+    screencapture -x -t png "$TMP_FILE" 2>/dev/null
 
     # Resize to 1x1 pixel to get average color
     sips -z 1 1 "$TMP_FILE" --out "$TMP_FILE" &>/dev/null
@@ -91,17 +91,12 @@ while true; do
     CONTENT_BRIGHTNESS=${CONTENT_BRIGHTNESS%.*}
     CONTENT_BRIGHTNESS=${CONTENT_BRIGHTNESS:-128}
 
-    # Calculate difference from last
-    DIFF=$((CONTENT_BRIGHTNESS - LAST_BRIGHTNESS))
-    DIFF=${DIFF#-}  # Absolute value
-
-    if [ "$DIFF" -gt 20 ]; then
-        if [ "$CONTENT_BRIGHTNESS" -gt 170 ]; then
-            set_for_bright
-        elif [ "$CONTENT_BRIGHTNESS" -lt 90 ]; then
-            set_for_dark
-        fi
-        LAST_BRIGHTNESS=$CONTENT_BRIGHTNESS
+    # React to absolute brightness levels (calibrated)
+    # Bright screen = ~175, Dark screen = ~78, Midpoint = ~126
+    if [ "$CONTENT_BRIGHTNESS" -gt 140 ]; then
+        set_for_bright
+    elif [ "$CONTENT_BRIGHTNESS" -lt 100 ]; then
+        set_for_dark
     fi
 
     sleep $CHECK_INTERVAL
