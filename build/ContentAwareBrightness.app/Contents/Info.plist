@@ -18,5 +18,7 @@
     <true/>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Content-Aware Brightness needs screen access to analyze content brightness and adjust your display accordingly.</string>
 </dict>
 </plist>

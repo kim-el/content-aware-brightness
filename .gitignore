@@ -3,6 +3,10 @@
 
 # Build output
 auto-brightness
+build/
+*.app
+*.zip
+*.o
 
 # Logs
 *.log

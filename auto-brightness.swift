@@ -282,22 +282,7 @@ actor ScreenCaptureHelper {
 //  PERMISSION CHECK
 // ----------------------------------------------------------------------------
 
-func showPermissionAlert() {
-    let alert = NSAlert()
-    alert.messageText = "Screen Recording Permission Required"
-    alert.informativeText = "Content-Aware Brightness needs access to screen content to adjust brightness automatically.\n\nPlease enable it in System Settings → Privacy & Security → Screen Recording.\n\nThen restart the app."
-    alert.alertStyle = .warning
-    alert.addButton(withTitle: "Open Settings")
-    alert.addButton(withTitle: "Quit")
-    
-    let response = alert.runModal()
-    if response == .alertFirstButtonReturn {
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
-        NSWorkspace.shared.open(url)
-    }
-    // Always exit after this dialog, forcing user to restart once granted.
-    exit(0)
-}
+// Permission dialog removed - app runs silently now
 
 // ----------------------------------------------------------------------------
 //  PREMIUM ENGINE
@@ -311,7 +296,8 @@ class PremiumEngine {
     private var animationTimer: Timer?
     private var trainingTimer: Timer?
     private var currentLuma: Float = 0.5
-    private var isAnimating: Bool = false  // Added to prevent jitter
+    private var isAnimating: Bool = false
+    private var hasPermission: Bool = false  // Block captures until permission confirmed
     
     init() { 
         currentTarget = getHWBrightness() 
@@ -348,9 +334,10 @@ class PremiumEngine {
     private var lastCaptureTime: Date = .distantPast
 
     func triggerCapture(reason: String) {
+        // Block all captures until permission is confirmed
+        guard hasPermission else { return }
+        
         // Global Throttle: Prevent rapid-fire captures (max 2 per second)
-        // This prevents CPU spikes when multiple events fire simultaneously
-        // Global Throttle
         let now = Date()
         if now.timeIntervalSince(lastCaptureTime) < Config.debounceInterval {
             return
@@ -448,14 +435,11 @@ class PremiumEngine {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.triggerCapture(reason: "SPACE SWITCH") }
         }
 
-        // Removed defunct accessibility observer
-
         // Start HID listener for brightness keys + Cmd+T/W
         BrightnessKeyListener.shared.onBrightnessKeyPressed = { [weak self] in
             self?.handleBrightnessKeyPressed()
         }
         BrightnessKeyListener.shared.onTabChanged = { [weak self] in
-            // Delay to let the new tab content load
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 self?.triggerCapture(reason: "TAB CHANGE")
             }
@@ -470,7 +454,14 @@ class PremiumEngine {
         }
         WindowTitleObserver.shared.start()
 
-        self.triggerCapture(reason: "BOOTUP")
+        // Check permission using official Apple API before triggering captures
+        if CGPreflightScreenCaptureAccess() {
+            self.hasPermission = true
+            print("✅ Permission confirmed - starting captures")
+            self.triggerCapture(reason: "BOOTUP")
+        } else {
+            print("⚠️ No screen recording permission. Grant permission in System Settings, then restart the app.")
+        }
     }
 }
 
@@ -531,22 +522,34 @@ app.setActivationPolicy(.accessory)
 // Setup Menu Bar immediately (so it appears fast)
 MenuBarManager.shared.Setup()
 
-print("🔥 App initializing...")
 
-// Async Logic
-Task {
-    // Check Permissions
-    let hasPermission = await ScreenCaptureHelper.shared.checkPermission()
-    
-    await MainActor.run {
-        if !hasPermission {
-            showPermissionAlert()
-        }
-        
-        print("✅ Permissions OK. Starting Engine.")
-        PremiumEngine.shared.start()
-    }
+// Redirect logs to file for debugging Finder launches
+let logPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/ContentAwareBrightness.log").path
+if let cString = logPath.cString(using: .utf8) {
+    freopen(cString, "a+", stdout)
+    freopen(cString, "a+", stderr)
 }
+
+print("----------------------------------------")
+print("🔥 App initializing...")
+print("📂 Log path: \(logPath)")
+
+// Request screen capture permission using official Apple API
+// This properly adds the app to System Settings → Screen Recording list
+let hasAccess = CGPreflightScreenCaptureAccess()
+if !hasAccess {
+    print("📋 Requesting screen capture permission...")
+    let granted = CGRequestScreenCaptureAccess()
+    if !granted {
+        print("⚠️ Permission not granted. Please enable in System Settings → Privacy & Security → Screen Recording, then restart the app.")
+    }
+} else {
+    print("✅ Permission already granted! (CGPreflightScreenCaptureAccess passed)")
+}
+
+// Start the engine (it will check permission before capturing)
+print("✅ Starting Engine...")
+PremiumEngine.shared.start()
 
 // BLOCKING CALL - Keeps the app running
 app.run()

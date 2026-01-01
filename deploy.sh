@@ -46,6 +46,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
     <true/>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Content-Aware Brightness needs screen access to analyze content brightness and adjust your display accordingly.</string>
 </dict>
 </plist>
 EOF
@@ -86,6 +88,13 @@ fi
 
 echo "✅ App Bundle Created: $APP_BUNDLE"
 
+# 5. Ad-hoc Code Sign (for local use without Apple Developer account)
+echo "🔏 Code signing app..."
+codesign --force --deep --sign - "$APP_BUNDLE"
+
+# Remove quarantine flags
+xattr -cr "$APP_BUNDLE"
+
 # 6. Create Release Zip (for distribution)
 echo ""
 echo "📦 Creating Release Zip..."
@@ -109,6 +118,35 @@ fi
 
 # Copy instead of Move, so build dir stays valid
 cp -R "$APP_BUNDLE" "$DEST"
+
+# 6. Persistence: Setup Launch at Login
+echo "🔄 Setting up auto-start on login..."
+LAUNCH_AGENT_DIR="$HOME/Library/LaunchAgents"
+mkdir -p "$LAUNCH_AGENT_DIR"
+PLIST_PATH="$LAUNCH_AGENT_DIR/$BUNDLE_ID.plist"
+
+cat > "$PLIST_PATH" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$BUNDLE_ID</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$DEST/Contents/MacOS/$APP_NAME</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>
+EOF
+
+# Reload Launch Agent
+launchctl unload "$PLIST_PATH" 2>/dev/null || true
+launchctl load "$PLIST_PATH"
 
 echo "✨ Installed successfully!"
 echo "▶️  Launching app..."
