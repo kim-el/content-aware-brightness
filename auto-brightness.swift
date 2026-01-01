@@ -285,7 +285,7 @@ actor ScreenCaptureHelper {
 func showPermissionAlert() {
     let alert = NSAlert()
     alert.messageText = "Screen Recording Permission Required"
-    alert.informativeText = "Content-Aware Brightness needs access to screen content to adjust brightness automatically.\n\nPlease enable it in System Settings → Privacy & Security → Screen Recording."
+    alert.informativeText = "Content-Aware Brightness needs access to screen content to adjust brightness automatically.\n\nPlease enable it in System Settings → Privacy & Security → Screen Recording.\n\nThen restart the app."
     alert.alertStyle = .warning
     alert.addButton(withTitle: "Open Settings")
     alert.addButton(withTitle: "Quit")
@@ -295,6 +295,8 @@ func showPermissionAlert() {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
         NSWorkspace.shared.open(url)
     }
+    // Always exit after this dialog, forcing user to restart once granted.
+    exit(0)
 }
 
 // ----------------------------------------------------------------------------
@@ -522,28 +524,29 @@ class MenuBarManager: NSObject {
 //  STARTUP
 // ----------------------------------------------------------------------------
 
+// Initialize App
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+
+// Setup Menu Bar immediately (so it appears fast)
+MenuBarManager.shared.Setup()
+
+print("🔥 App initializing...")
+
+// Async Logic
 Task {
+    // Check Permissions
     let hasPermission = await ScreenCaptureHelper.shared.checkPermission()
     
     await MainActor.run {
-        // Ensure NSApplication is initialized
-        let app = NSApplication.shared
-        // Accessory policy means it doesn't show in Dock but can have a menu bar icon
-        app.setActivationPolicy(.accessory)
-        
         if !hasPermission {
             showPermissionAlert()
         }
         
-        print("🔥 App started (Interactive Training Mode).")
-        
-        // Setup Menu Bar
-        MenuBarManager.shared.Setup()
-        
-        // Start Engine
+        print("✅ Permissions OK. Starting Engine.")
         PremiumEngine.shared.start()
-        
-        app.run()
     }
 }
-// RunLoop.main.run() is replaced by app.run() inside the Task
+
+// BLOCKING CALL - Keeps the app running
+app.run()
