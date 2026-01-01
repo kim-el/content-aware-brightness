@@ -1,0 +1,292 @@
+import Cocoa
+import CoreGraphics
+import Foundation
+import ScreenCaptureKit
+
+// Force unbuffered output
+setvbuf(stdout, nil, _IONBF, 0)
+
+// ----------------------------------------------------------------------------
+//  PRIVATE BINDINGS (DisplayServices for brightness control)
+// ----------------------------------------------------------------------------
+
+@_silgen_name("DisplayServicesGetBrightness")
+func DisplayServicesGetBrightness(_ displayID: CGDirectDisplayID, _ brightness: UnsafeMutablePointer<Float>) -> Int32
+
+@_silgen_name("DisplayServicesSetBrightness")
+func DisplayServicesSetBrightness(_ displayID: CGDirectDisplayID, _ brightness: Float) -> Int32
+
+// ----------------------------------------------------------------------------
+//  GLOBAL STATE & CONFIG
+// ----------------------------------------------------------------------------
+
+var lightTarget: Float = 0.45
+var darkTarget: Float = 1.0
+let CAPTURE_SIZE: Int = 50
+let TOP_TRIGGER_HEIGHT: CGFloat = 80
+let TICK_INTERVAL: TimeInterval = 0.02
+
+// ----------------------------------------------------------------------------
+//  SCREENCAPTUREKIT HELPER
+// ----------------------------------------------------------------------------
+
+actor ScreenCaptureHelper {
+    static let shared = ScreenCaptureHelper()
+    
+    private var content: SCShareableContent?
+    private var display: SCDisplay?
+    
+    func initialize() async throws {
+        content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        display = content?.displays.first
+    }
+    
+    func captureScreenCenter() async throws -> Float? {
+        guard let display = display else {
+            try await initialize()
+            guard let display = self.display else { return nil }
+            return try await captureWithDisplay(display)
+        }
+        return try await captureWithDisplay(display)
+    }
+    
+    private func captureWithDisplay(_ display: SCDisplay) async throws -> Float? {
+        let filter = SCContentFilter(display: display, excludingWindows: [])
+        
+        let config = SCStreamConfiguration()
+        config.width = CAPTURE_SIZE
+        config.height = CAPTURE_SIZE
+        config.showsCursor = false
+        config.capturesAudio = false
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        
+        // Capture a single frame - returns CGImage directly
+        let cgImage = try await SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: config
+        )
+        
+        // Create 1x1 context to get average color
+        guard let ctx = CGContext(
+            data: nil,
+            width: 1,
+            height: 1,
+            bitsPerComponent: 8,
+            bytesPerRow: 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        
+        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let pixel = ctx.data!.bindMemory(to: UInt8.self, capacity: 4)
+        let luma = (0.299 * Float(pixel[0]) + 0.587 * Float(pixel[1]) + 0.114 * Float(pixel[2])) / 255.0
+        
+        return luma
+    }
+    
+    func checkPermission() async -> Bool {
+        do {
+            _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            return true
+        } catch {
+            return false
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+//  PERMISSION CHECK
+// ----------------------------------------------------------------------------
+
+func printPermissionError() {
+    print("")
+    print("❌ Screen Recording permission required!")
+    print("")
+    print("   This app needs to see your screen content to adjust brightness.")
+    print("")
+    print("   To grant permission:")
+    print("   1. Open System Settings → Privacy & Security → Screen Recording")
+    print("   2. Add 'auto-brightness' to the list")
+    print("   3. Restart this app")
+    print("")
+    print("   Or run this command to open settings directly:")
+    print("   open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture\"")
+    print("")
+}
+
+// ----------------------------------------------------------------------------
+//  PREMIUM ENGINE
+// ----------------------------------------------------------------------------
+
+class PremiumEngine {
+    static let shared = PremiumEngine()
+    
+    private var currentTarget: Float = 0.5
+    private var lastSettledHW: Float = -1.0
+    private var animationTimer: Timer?
+    private var trainingTimer: Timer?
+    private var currentLuma: Float = 0.5
+    
+    init() { 
+        currentTarget = getHWBrightness() 
+        lastSettledHW = currentTarget
+    }
+    
+    func getHWBrightness() -> Float {
+        var b: Float = 0.5
+        _ = DisplayServicesGetBrightness(CGMainDisplayID(), &b)
+        return b
+    }
+    
+    func setHWBrightness(_ val: Float) {
+        _ = DisplayServicesSetBrightness(CGMainDisplayID(), val)
+    }
+
+    private func commitTraining() {
+        guard trainingTimer != nil else { return }
+        trainingTimer?.invalidate()
+        trainingTimer = nil
+        
+        let finalHW = getHWBrightness()
+        if currentLuma > 0.5 {
+            lightTarget = finalHW
+        } else {
+            darkTarget = finalHW
+        }
+        
+        print("🧠 LEARNED (Commit): New target for \(currentLuma > 0.5 ? "Light" : "Dark") is \(String(format: "%.2f", finalHW))")
+        lastSettledHW = finalHW
+        currentTarget = finalHW
+    }
+
+    func triggerCapture(reason: String) {
+        // Rule: If an event happens while training, commit the current training immediately.
+        if trainingTimer != nil {
+            commitTraining()
+        }
+
+        // 1. Check for manual override to initiate Training Mode
+        let currentHW = getHWBrightness()
+        if lastSettledHW >= 0 && abs(currentHW - lastSettledHW) > 0.08 {
+            startTraining()
+            return
+        }
+
+        // 2. Capture and Calculate luma using ScreenCaptureKit
+        Task {
+            guard let luma = try? await ScreenCaptureHelper.shared.captureScreenCenter() else { return }
+            
+            await MainActor.run {
+                self.currentLuma = luma
+                
+                // 3. Update Targets based on content
+                let nextGoal = luma > 0.5 ? lightTarget : darkTarget
+                if abs(nextGoal - self.currentTarget) < 0.01 { return }
+                
+                print("⚡ [\(reason)] Drifting to \(String(format: "%.2f", nextGoal))")
+                self.currentTarget = nextGoal
+                self.startMotion()
+            }
+        }
+    }
+
+    private func startTraining() {
+        animationTimer?.invalidate()
+        animationTimer = nil
+        
+        trainingTimer?.invalidate()
+        print("🛠 TRAINING: Capturing adjustments...")
+        
+        trainingTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
+            self?.commitTraining()
+        }
+    }
+
+    private func startMotion() {
+        if animationTimer != nil { return }
+        
+        // Track expected trajectory
+        var expectedBrightness = getHWBrightness()
+        let targetBrightness = currentTarget
+        
+        animationTimer = Timer.scheduledTimer(withTimeInterval: TICK_INTERVAL, repeats: true) { [weak self] t in
+            guard let self = self else { return }
+            
+            // Calculate expected next position
+            let diff = targetBrightness - expectedBrightness
+            expectedBrightness += (diff * 0.1)
+            
+            // Check for user interference (trajectory deviation)
+            let actualBrightness = self.getHWBrightness()
+            if abs(actualBrightness - expectedBrightness) > 0.05 {
+                // User interfered! Stop animation and enter training
+                print("👆 User override detected")
+                t.invalidate()
+                self.animationTimer = nil
+                self.lastSettledHW = actualBrightness
+                self.startTraining()
+                return
+            }
+            
+            // Check if done
+            if abs(diff) < 0.003 {
+                self.setHWBrightness(targetBrightness)
+                self.lastSettledHW = targetBrightness
+                t.invalidate()
+                self.animationTimer = nil
+                return
+            }
+            
+            // Continue animation
+            self.setHWBrightness(expectedBrightness)
+        }
+    }
+
+    func start() {
+        let ws = NSWorkspace.shared
+        let nc = ws.notificationCenter
+
+        nc.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { _ in 
+            self.triggerCapture(reason: "APP SWITCH") 
+        }
+        nc.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.triggerCapture(reason: "SPACE SWITCH") }
+        }
+
+        DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.accessibility.api"), object: nil, queue: .main) { _ in
+             self.triggerCapture(reason: "TITLE CHANGE")
+        }
+
+        NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .mouseMoved]) { _ in
+            let loc = NSEvent.mouseLocation
+            let screen = NSScreen.main?.frame.height ?? 1000
+            if loc.y >= (screen - TOP_TRIGGER_HEIGHT) { 
+                self.triggerCapture(reason: "MOUSE AT TOP") 
+            }
+        }
+
+        // No more hardware polling - detection happens during animation via trajectory check
+
+        self.triggerCapture(reason: "BOOTUP")
+    }
+}
+
+// ----------------------------------------------------------------------------
+//  STARTUP
+// ----------------------------------------------------------------------------
+
+Task {
+    let hasPermission = await ScreenCaptureHelper.shared.checkPermission()
+    
+    await MainActor.run {
+        if !hasPermission {
+            printPermissionError()
+            exit(1)
+        }
+        
+        print("🔥 App started (Interactive Training Mode).")
+        PremiumEngine.shared.start()
+    }
+}
+
+RunLoop.main.run()
