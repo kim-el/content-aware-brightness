@@ -180,10 +180,18 @@ func DisplayServicesSetBrightness(_ displayID: CGDirectDisplayID, _ brightness: 
 //  GLOBAL STATE & CONFIG
 // ----------------------------------------------------------------------------
 
+enum Config {
+    static let captureSize = 50
+    static let tickInterval: TimeInterval = 0.02
+    static let animationDuration: TimeInterval = 0.5
+    static let debounceInterval: TimeInterval = 0.5
+    static let targetTolerance: Float = 0.03
+    static let animationThreshold: Float = 0.003
+    static let trainingDelay: TimeInterval = 5.0
+}
+
 var lightTarget: Float = 0.45
 var darkTarget: Float = 1.0
-let CAPTURE_SIZE: Int = 50
-let TICK_INTERVAL: TimeInterval = 0.02
 
 // ----------------------------------------------------------------------------
 //  SCREENCAPTUREKIT HELPER
@@ -213,8 +221,8 @@ actor ScreenCaptureHelper {
         let filter = SCContentFilter(display: display, excludingWindows: [])
         
         let config = SCStreamConfiguration()
-        config.width = CAPTURE_SIZE
-        config.height = CAPTURE_SIZE
+        config.width = Config.captureSize
+        config.height = Config.captureSize
         config.showsCursor = false
         config.capturesAudio = false
         config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
@@ -341,8 +349,9 @@ class PremiumEngine {
     func triggerCapture(reason: String) {
         // Global Throttle: Prevent rapid-fire captures (max 2 per second)
         // This prevents CPU spikes when multiple events fire simultaneously
+        // Global Throttle
         let now = Date()
-        if now.timeIntervalSince(lastCaptureTime) < 0.5 {
+        if now.timeIntervalSince(lastCaptureTime) < Config.debounceInterval {
             return
         }
         lastCaptureTime = now
@@ -363,7 +372,7 @@ class PremiumEngine {
                 let nextGoal = luma > 0.5 ? lightTarget : darkTarget
                 
                 // Skip if already at target (with larger tolerance)
-                if abs(nextGoal - self.currentTarget) < 0.03 { return }
+                if abs(nextGoal - self.currentTarget) < Config.targetTolerance { return }
                 
                 print("⚡ [\(reason)] Luma: \(String(format: "%.2f", luma)) → Target: \(String(format: "%.2f", nextGoal))")
                 self.currentTarget = nextGoal
@@ -379,7 +388,7 @@ class PremiumEngine {
         trainingTimer?.invalidate()
         print("🛠 TRAINING: Capturing adjustments...")
         
-        trainingTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
+        trainingTimer = Timer.scheduledTimer(withTimeInterval: Config.trainingDelay, repeats: false) { [weak self] _ in
             self?.commitTraining()
         }
     }
@@ -389,12 +398,12 @@ class PremiumEngine {
         isAnimating = true
         var ref = getHWBrightness()
         
-        animationTimer = Timer.scheduledTimer(withTimeInterval: TICK_INTERVAL, repeats: true) { [weak self] t in
+        animationTimer = Timer.scheduledTimer(withTimeInterval: Config.tickInterval, repeats: true) { [weak self] t in
             guard let self = self else { return }
             let diff = self.currentTarget - ref
             
             // Check if done
-            if abs(diff) < 0.003 {
+            if abs(diff) < Config.animationThreshold {
                 self.setHWBrightness(self.currentTarget)
                 self.lastSettledHW = self.currentTarget
                 self.isAnimating = false
@@ -420,6 +429,12 @@ class PremiumEngine {
         lastSettledHW = getHWBrightness()
         startTraining()
     }
+    
+    // Cleanup for timers (Fix Memory Leak suggestion)
+    deinit {
+        animationTimer?.invalidate()
+        trainingTimer?.invalidate()
+    }
 
     func start() {
         let ws = NSWorkspace.shared
@@ -432,9 +447,7 @@ class PremiumEngine {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.triggerCapture(reason: "SPACE SWITCH") }
         }
 
-        DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.accessibility.api"), object: nil, queue: .main) { _ in
-             self.triggerCapture(reason: "TITLE CHANGE")
-        }
+        // Removed defunct accessibility observer
 
         // Start HID listener for brightness keys + Cmd+T/W
         BrightnessKeyListener.shared.onBrightnessKeyPressed = { [weak self] in
