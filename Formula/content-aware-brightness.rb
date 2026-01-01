@@ -9,16 +9,51 @@ class ContentAwareBrightness < Formula
   depends_on :xcode => ["12.0", :build]
 
   def install
+    # 1. Create App Bundle Structure
+    app_bundle = "ContentAwareBrightness.app"
+    macos_dir = "#{app_bundle}/Contents/MacOS"
+    resources_dir = "#{app_bundle}/Contents/Resources"
+    
+    mkdir_p macos_dir
+    mkdir_p resources_dir
+    
+    # 2. Compile Swift binary
     system "swiftc", "-O", 
            "-Xlinker", "-F/System/Library/PrivateFrameworks",
            "-Xlinker", "-framework", "-Xlinker", "DisplayServices",
-           "-o", "content-aware-brightness", "auto-brightness.swift"
+           "-o", "#{macos_dir}/ContentAwareBrightness", "auto-brightness.swift"
     
-    bin.install "content-aware-brightness"
+    # 3. Create Info.plist (Critical for TCC/Permissions)
+    File.write "#{app_bundle}/Contents/Info.plist", <<~EOS
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+      <plist version="1.0">
+      <dict>
+          <key>CFBundleName</key>
+          <string>ContentAwareBrightness</string>
+          <key>CFBundleExecutable</key>
+          <string>ContentAwareBrightness</string>
+          <key>CFBundleIdentifier</key>
+          <string>com.kim.ContentAwareBrightness</string>
+          <key>CFBundlePackageType</key>
+          <string>APPL</string>
+          <key>LSUIElement</key>
+          <true/>
+          <key>NSScreenCaptureUsageDescription</key>
+          <string>Content-Aware Brightness needs screen access to adjust display brightness.</string>
+      </dict>
+      </plist>
+    EOS
+
+    # 4. Install the App Bundle
+    prefix.install app_bundle
+    
+    # 5. Create a symlink in bin so it can be run from CLI (optional)
+    bin.install_symlink "#{prefix}/#{app_bundle}/Contents/MacOS/ContentAwareBrightness" => "content-aware-brightness"
   end
 
   service do
-    run [opt_bin/"content-aware-brightness"]
+    run [opt_prefix/"ContentAwareBrightness.app/Contents/MacOS/ContentAwareBrightness"]
     keep_alive true
     run_type :interval
     interval 10
