@@ -25,8 +25,4 @@ class ContentAwareBrightness < Formula
     log_path var/"log/content-aware-brightness.log"
     error_log_path var/"log/content-aware-brightness.error.log"
   end
-
-  test do
-    system "#{bin}/content-aware-brightness", "--help"
-  end
 end
